@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>退休資產規劃 V7.2 修正版 - 52→60只算8年 + 易讀性 + 自動抓年化</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+<style id="v72-readability-fix">
+/* V7.2 易讀性修正 - 解決點入反白看不見 */
+input, select, textarea { color: #0f172a !important; background: white !important; -webkit-text-fill-color: #0f172a !important; }
+input:focus, select:focus, textarea:focus { color: #0f172a !important; background: white !important; border-color: #0f172a !important; outline: 2px solid #0f172a !important; }
+tr:focus-within { background: #f8fafc !important; }
+tr:focus-within td { color: #0f172a !important; }
+</style>
+
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif;background:#f8fafc}
+.card{background:white;border-radius:16px;box-shadow:0 1px 3px rgba(0,0,0,0.08);border:1px solid #e2e8f0}
+.tab-active{background:#0f172a;color:white;border-color:#0f172a}
+.tab{padding:8px 14px;border-radius:9999px;font-size:13px;cursor:pointer;border:1px solid #e2e8f0;background:white;white-space:nowrap}
+.input{border:1px solid #e2e8f0;border-radius:8px;padding:6px 10px;width:100%;font-size:13px}
+.input-sm{padding:4px 8px;font-size:12px}
+.btn{padding:8px 14px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer}
+.btn-primary{background:#0f172a;color:white}
+.btn-ghost{background:#f1f5f9}
+.badge{font-size:11px;padding:3px 10px;border-radius:9999px;background:#f1f5f9;border:1px solid #e2e8f0}
+</style>
+</head>
+<body class="p-3 md:p-6 max-w-[1450px] mx-auto">
+<div class="flex flex-col md:flex-row justify-between gap-3 mb-4">
+  <div>
+    <h1 class="text-[23px] md:text-[27px] font-bold tracking-tight">退休資產規劃 <span class="text-[13px] font-normal text-slate-500 ml-2">V7 · 總資產修正 · 逐檔年化 · DCA逐檔GBM蒙地卡羅</span></h1>
+    <p class="text-[11px] text-slate-500 mt-1">總資產=台股+基金+美股+勞退正確加總 · 每檔μ/σ獨立 · DCA逐檔跑GBM 1000次 P10/P50/P90</p>
+  </div>
+  <div class="flex gap-2 items-center flex-wrap">
+    <select id="profileSelect" class="input w-[150px]"></select>
+    <button onclick="addProfile()" class="btn btn-ghost">＋檔案</button>
+    <button onclick="saveProfiles()" class="btn btn-primary">儲存</button>
+    <button onclick="exportExcel()" class="btn btn-ghost">Excel</button>
+  </div>
+</div>
+
+<div id="fileWarning" class="hidden card p-3 mb-3 bg-amber-50 border-amber-200 text-[12px] text-amber-800">您是用 file:// 開啟，自動更新會被瀏覽器擋住，請部署到 Netlify：把整個資料夾拖到 https://app.netlify.com/drop</div>
+
+<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+  <div class="card p-4">
+    <div class="text-[11px] text-slate-500">目前總資產 (已持有)</div>
+    <div id="totalCurrent" class="text-[19px] font-bold mt-1">--</div>
+    <div id="totalCurrentBreakdown" class="text-[11px] text-slate-500 mt-1 leading-4"></div>
+  </div>
+  <div class="card p-4">
+    <div class="text-[11px] text-slate-500">預估60歲總資產 (確定性)</div>
+    <div id="total60" class="text-[19px] font-bold mt-1">--</div>
+    <div id="total60Detail" class="text-[11px] text-slate-500 mt-1 leading-4"></div>
+  </div>
+  <div class="card p-4">
+    <div class="text-[11px] text-slate-500">預估65歲總資產</div>
+    <div id="total65" class="text-[19px] font-bold mt-1">--</div>
+    <div id="total65Detail" class="text-[11px] text-slate-500 mt-1"></div>
+  </div>
+  <div class="card p-4 border-emerald-200">
+    <div class="text-[11px] text-emerald-700">DCA未來值 MC中位數 P10-P90</div>
+    <div id="totalDCA" class="text-[18px] font-bold mt-1 text-emerald-700">--</div>
+    <div id="totalDCADetail" class="text-[11px] text-slate-500 mt-1">逐檔GBM 1000次</div>
+  </div>
+</div>
+
+<div class="flex flex-wrap gap-2 mb-4">
+  <button onclick="updateAllPrices()" class="btn btn-primary">↻ 自動更新最新報價</button>
+  <span id="lastUpdate" class="badge"></span>
+  <span id="priceStatus" class="badge"></span>
+  <span class="badge">來源 /.netlify/functions/stock → Yahoo → TWSE</span>
+</div>
+
+<div class="flex flex-wrap gap-2 mb-3" id="tabs">
+  <div class="tab tab-active" data-tab="tw">台股持股</div>
+  <div class="tab" data-tab="fund">基金</div>
+  <div class="tab" data-tab="us">美股</div>
+  <div class="tab" data-tab="labor">勞退新制</div>
+  <div class="tab" data-tab="dca">每月DCA逐檔+GBM</div>
+  <div class="tab" data-tab="calc">退休試算(逐檔μ)</div>
+  <div class="tab" data-tab="charts">圖表</div>
+</div>
+
+<div id="panel-tw" class="tab-panel"><div class="card p-3 md:p-4 overflow-x-auto"><div class="flex justify-between mb-2"><h3 class="font-bold text-[14px]">台股持股 - 每檔μ/σ獨立，60歲未來值依各股年化算</h3><button onclick="addRow('tw')" class="btn btn-ghost text-[12px]">＋新增</button></div><table class="w-full text-[12px] min-w-[980px]"><thead class="text-slate-500 text-[11px]"><tr><th class="text-left">代號</th><th class="text-left">名稱</th><th>股數</th><th>現價</th><th>市值</th><th>μ年化%</th><th>σ波動%</th><th>60歲未來值</th><th></th></tr></thead><tbody id="tbody-tw"></tbody></table></div></div>
+<div id="panel-fund" class="tab-panel hidden"><div class="card p-3 md:p-4 overflow-x-auto"><div class="flex justify-between mb-2"><h3 class="font-bold text-[14px]">基金</h3><button onclick="addRow('fund')" class="btn btn-ghost text-[12px]">＋新增</button></div><table class="w-full text-[12px] min-w-[900px]"><thead class="text-slate-500 text-[11px]"><tr><th>代號</th><th>名稱</th><th>單位</th><th>淨值</th><th>市值</th><th>μ%</th><th>σ%</th><th>60歲FV</th><th></th></tr></thead><tbody id="tbody-fund"></tbody></table></div></div>
+<div id="panel-us" class="tab-panel hidden"><div class="card p-3 md:p-4 overflow-x-auto"><div class="flex justify-between mb-2"><h3 class="font-bold text-[14px]">美股 (TWD匯率32)</h3><button onclick="addRow('us')" class="btn btn-ghost text-[12px]">＋新增</button></div><table class="w-full text-[12px] min-w-[980px]"><thead class="text-slate-500 text-[11px]"><tr><th>代號</th><th>名稱</th><th>股數</th><th>現價USD</th><th>市值TWD</th><th>μ%</th><th>σ%</th><th>60歲FV</th><th></th></tr></thead><tbody id="tbody-us"></tbody></table></div></div>
+<div id="panel-labor" class="tab-panel hidden"><div class="card p-4"><h3 class="font-bold mb-3 text-[14px]">勞退新制 - 獨立年化</h3><div class="grid grid-cols-2 md:grid-cols-4 gap-3"><div><label class="text-[11px] text-slate-500">目前餘額</label><input id="laborBalance" class="input" type="number" value="800000"></div><div><label class="text-[11px] text-slate-500">每月提撥</label><input id="laborMonthly" class="input" type="number" value="8000"></div><div><label class="text-[11px] text-slate-500">μ年化%</label><input id="laborMu" class="input" type="number" value="3.5" step="0.1"></div><div><label class="text-[11px] text-slate-500">σ波動%</label><input id="laborSigma" class="input" type="number" value="2" step="0.1"></div></div></div></div>
+
+<div id="panel-dca" class="tab-panel hidden">
+  <div class="card p-3 md:p-4 mb-3">
+    <div class="flex flex-col md:flex-row justify-between gap-2 mb-2">
+      <h3 class="font-bold text-[14px]">每月DCA逐檔 - 每檔獨立GBM蒙地卡羅 1000次</h3>
+      <div class="flex gap-2"><button onclick="addRow('dca')" class="btn btn-ghost text-[12px]">＋新增DCA</button><button onclick="runAllMonteCarlo()" class="btn btn-primary text-[12px]">🎲 跑蒙地卡羅回測</button></div>
+    </div>
+    <div class="text-[11px] text-slate-500 mb-2">GBM: S_t=S0·exp((μ-0.5σ²)t+σW_t) 月成長=exp((μ-0.5σ²)dt+σ√dt·Z) Z~N(0,1) Box-Muller 月初投入 (V+每月)*growth。顯示P10/P25/P50/P75/P90</div>
+    <div class="overflow-x-auto"><table class="w-full text-[12px] min-w-[1280px]"><thead class="text-slate-500 text-[11px]"><tr><th>代號</th><th>名稱</th><th>每月</th><th>μ%</th><th>σ%</th><th>已投年</th><th>還投年</th><th>已累積</th><th>確定性FV</th><th>MC中位</th><th>P10-P90</th><th></th></tr></thead><tbody id="tbody-dca"></tbody></table></div>
+  </div>
+  <div class="grid md:grid-cols-2 gap-3">
+    <div class="card p-4"><h4 class="font-bold text-[13px] mb-2">DCA逐檔蒙地卡羅結果 (已修正總資產加總)</h4><div id="mcResults" class="text-[12px] space-y-1 leading-5"></div></div>
+    <div class="card p-4"><h4 class="font-bold text-[13px] mb-2">DCA總額分布直方圖 (1000次加總)</h4><canvas id="mcChart" height="220"></canvas></div>
+  </div>
+</div>
+
+<div id="panel-calc" class="tab-panel hidden"><div class="card p-4 mb-3"><h3 class="font-bold mb-3 text-[14px]">退休試算 - 依各股μ%估算未來值 (修正總資產加總)</h3><div class="grid grid-cols-3 md:grid-cols-6 gap-3"><div><label class="text-[11px]">目前年齡</label><input id="ageNow" class="input" type="number" value="35"></div><div><label class="text-[11px]">退休年齡</label><input id="ageRetire" class="input" type="number" value="60"></div><div><label class="text-[11px]">通膨%</label><input id="inflation" class="input" type="number" value="2" step="0.1"></div><div><label class="text-[11px]">月花費</label><input id="monthlySpend" class="input" type="number" value="50000"></div><div><label class="text-[11px]">退休後年數</label><input id="yearsAfter" class="input" type="number" value="30"></div><div class="flex items-end"><button onclick="calcRetirement()" class="btn btn-primary w-full">計算</button></div></div><div id="calcDetail" class="mt-4 text-[13px] leading-6"></div></div></div>
+
+<div id="panel-charts" class="tab-panel hidden"><div class="grid md:grid-cols-2 gap-3"><div class="card p-4"><h4 class="font-bold text-[13px] mb-2">資產配置 (目前總資產正確加總)</h4><canvas id="allocChart" height="240"></canvas></div><div class="card p-4"><h4 class="font-bold text-[13px] mb-2">退休成長 P10/P50/P90 (逐檔μ)</h4><canvas id="growthChart" height="240"></canvas></div></div></div>
+
+<div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[12px] px-4 py-2 rounded-full hidden"></div>
+
+<script>
+const NAME_MAP={'0050':'元大台灣50','0056':'元大高股息','00690':'兆豐台灣藍籌30','00692':'富邦公司治理','00713':'元大台灣高息低波','00878':'國泰永續高股息','00918':'大華優利高填息30','00919':'群益台灣精選高息','00929':'復華台灣科技優息','00940':'元大台灣價值高息','2330':'台積電','2317':'鴻海','2454':'聯發科','VOO':'S&P500 ETF'};
+const STORAGE_KEY='retirement_gbm_v7';
+let profiles={}; let currentProfile='預設';
+function defaultData(){
+  return {
+    tw:[{code:'00918',name:'大華優利高填息30',shares:10000,price:22.5,mu:7,sigma:15},{code:'00690',name:'兆豐台灣藍籌30',shares:5000,price:32,mu:7,sigma:15}],
+    fund:[{code:'全球股票',name:'全球股票基金',shares:100,price:20,mu:6,sigma:12}],
+    us:[{code:'VOO',name:'S&P500 ETF',shares:50,price:450,mu:9,sigma:18}],
+    labor:{balance:800000,monthly:8000,mu:3.5,sigma:2},
+    dca:[{code:'0050',name:'元大台灣50',monthly:10000,mu:7,sigma:15,yearsDone:0,yearsLeft:25,acc:0},{code:'VOO',name:'S&P500 ETF',monthly:5000,mu:9,sigma:18,yearsDone:0,yearsLeft:25,acc:0}],
+    ageNow:35,ageRetire:60,inflation:2,monthlySpend:50000,yearsAfter:30
+  };
+}
+function loadProfiles(){
+  try{ const raw=localStorage.getItem(STORAGE_KEY); if(raw){ profiles=JSON.parse(raw);} else { profiles={'預設':defaultData()}; } }catch(e){ profiles={'預設':defaultData()}; }
+  if(!profiles[currentProfile]) currentProfile=Object.keys(profiles)[0];
+  renderProfileSelect(); loadCurrent();
+}
+function renderProfileSelect(){
+  const sel=document.getElementById('profileSelect'); sel.innerHTML='';
+  Object.keys(profiles).forEach(k=>{ const o=document.createElement('option'); o.value=k; o.textContent=k; if(k===currentProfile) o.selected=true; sel.appendChild(o); });
+  sel.onchange=()=>{ currentProfile=sel.value; loadCurrent(); };
+}
+function loadCurrent(){
+  const d=profiles[currentProfile];
+  document.getElementById('laborBalance').value=d.labor.balance;
+  document.getElementById('laborMonthly').value=d.labor.monthly;
+  document.getElementById('laborMu').value=d.labor.mu;
+  document.getElementById('laborSigma').value=d.labor.sigma;
+  document.getElementById('ageNow').value=d.ageNow;
+  document.getElementById('ageRetire').value=d.ageRetire;
+  document.getElementById('inflation').value=d.inflation;
+  document.getElementById('monthlySpend').value=d.monthlySpend;
+  document.getElementById('yearsAfter').value=d.yearsAfter;
+  renderTables(); calcAll();
+}
+function saveProfiles(){
+  const d=profiles[currentProfile];
+  d.labor.balance=parseFloat(document.getElementById('laborBalance').value)||0;
+  d.labor.monthly=parseFloat(document.getElementById('laborMonthly').value)||0;
+  d.labor.mu=parseFloat(document.getElementById('laborMu').value)||0;
+  d.labor.sigma=parseFloat(document.getElementById('laborSigma').value)||0;
+  d.ageNow=parseFloat(document.getElementById('ageNow').value)||0;
+  d.ageRetire=parseFloat(document.getElementById('ageRetire').value)||0;
+  d.inflation=parseFloat(document.getElementById('inflation').value)||0;
+  d.monthlySpend=parseFloat(document.getElementById('monthlySpend').value)||0;
+  d.yearsAfter=parseFloat(document.getElementById('yearsAfter').value)||0;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(profiles));
+  toast('已儲存'); calcAll();
+}
+function addProfile(){ const name=prompt('新檔案名稱'); if(!name) return; profiles[name]=JSON.parse(JSON.stringify(profiles[currentProfile]||defaultData())); currentProfile=name; renderProfileSelect(); loadCurrent(); saveProfiles(); }
+function addRow(type){
+  const d=profiles[currentProfile];
+  if(type==='tw') d.tw.push({code:'',name:'',shares:1000,price:0,mu:7,sigma:15});
+  if(type==='fund') d.fund.push({code:'',name:'',shares:0,price:0,mu:6,sigma:12});
+  if(type==='us') d.us.push({code:'',name:'',shares:0,price:0,mu:9,sigma:18});
+  if(type==='dca') d.dca.push({code:'',name:'',monthly:5000,mu:7,sigma:15,yearsDone:0,yearsLeft:25,acc:0});
+  renderTables(); saveProfiles();
+}
+function delRow(type, idx){ profiles[currentProfile][type].splice(idx,1); renderTables(); saveProfiles(); calcAll(); }
+function renderTables(){
+  const d=profiles[currentProfile];
+  const tbTw=document.getElementById('tbody-tw'); tbTw.innerHTML='';
+  d.tw.forEach((row,i)=>{
+    const mv=row.shares*row.price; const fv=mv*Math.pow(1+row.mu/100, Math.max(0,(d.ageRetire-d.ageNow)));
+    const tr=document.createElement('tr'); tr.className='border-t'; tr.innerHTML=`<td><input class="input input-sm" value="${row.code}" onchange="updateField('tw',${i},'code',this.value)" onblur="fetchNamePrice('tw',${i})"></td><td><input class="input input-sm" value="${row.name}" onchange="updateField('tw',${i},'name',this.value)"></td><td><input class="input input-sm" type="number" value="${row.shares}" onchange="updateField('tw',${i},'shares',this.value)"></td><td><input class="input input-sm" type="number" step="0.01" value="${row.price}" onchange="updateField('tw',${i},'price',this.value)"></td><td class="font-mono">${mv.toLocaleString()}</td><td><input class="input input-sm" type="number" step="0.1" value="${row.mu}" onchange="updateField('tw',${i},'mu',this.value)"></td><td><input class="input input-sm" type="number" step="0.1" value="${row.sigma}" onchange="updateField('tw',${i},'sigma',this.value)"></td><td class="font-mono">${Math.round(fv).toLocaleString()}</td><td><button onclick="delRow('tw',${i})" class="text-red-500">✕</button></td>`;
+    tbTw.appendChild(tr);
+  });
+  const tbF=document.getElementById('tbody-fund'); tbF.innerHTML='';
+  d.fund.forEach((row,i)=>{
+    const mv=row.shares*row.price; const fv=mv*Math.pow(1+row.mu/100, Math.max(0,(d.ageRetire-d.ageNow)));
+    const tr=document.createElement('tr'); tr.className='border-t'; tr.innerHTML=`<td><input class="input input-sm" value="${row.code}" onchange="updateField('fund',${i},'code',this.value)"></td><td><input class="input input-sm" value="${row.name}" onchange="updateField('fund',${i},'name',this.value)"></td><td><input class="input input-sm" type="number" value="${row.shares}" onchange="updateField('fund',${i},'shares',this.value)"></td><td><input class="input input-sm" type="number" value="${row.price}" onchange="updateField('fund',${i},'price',this.value)"></td><td class="font-mono">${mv.toLocaleString()}</td><td><input class="input input-sm" type="number" value="${row.mu}" onchange="updateField('fund',${i},'mu',this.value)"></td><td><input class="input input-sm" type="number" value="${row.sigma}" onchange="updateField('fund',${i},'sigma',this.value)"></td><td class="font-mono">${Math.round(fv).toLocaleString()}</td><td><button onclick="delRow('fund',${i})" class="text-red-500">✕</button></td>`;
+    tbF.appendChild(tr);
+  });
+  const tbUs=document.getElementById('tbody-us'); tbUs.innerHTML='';
+  d.us.forEach((row,i)=>{
+    const mv=row.shares*row.price*32; const fv=mv*Math.pow(1+row.mu/100, Math.max(0,(d.ageRetire-d.ageNow)));
+    const tr=document.createElement('tr'); tr.className='border-t'; tr.innerHTML=`<td><input class="input input-sm" value="${row.code}" onchange="updateField('us',${i},'code',this.value)" onblur="fetchNamePrice('us',${i})"></td><td><input class="input input-sm" value="${row.name}" onchange="updateField('us',${i},'name',this.value)"></td><td><input class="input input-sm" type="number" value="${row.shares}" onchange="updateField('us',${i},'shares',this.value)"></td><td><input class="input input-sm" type="number" value="${row.price}" onchange="updateField('us',${i},'price',this.value)"></td><td class="font-mono">${Math.round(mv).toLocaleString()}</td><td><input class="input input-sm" type="number" value="${row.mu}" onchange="updateField('us',${i},'mu',this.value)"></td><td><input class="input input-sm" type="number" value="${row.sigma}" onchange="updateField('us',${i},'sigma',this.value)"></td><td class="font-mono">${Math.round(fv).toLocaleString()}</td><td><button onclick="delRow('us',${i})" class="text-red-500">✕</button></td>`;
+    tbUs.appendChild(tr);
+  });
+  const tbDca=document.getElementById('tbody-dca'); tbDca.innerHTML='';
+  d.dca.forEach((row,i)=>{
+    const fvDet=deterministicFV(row); const mc=row.mc;
+    const tr=document.createElement('tr'); tr.className='border-t';
+    tr.innerHTML=`<td><input class="input input-sm" value="${row.code}" onchange="updateField('dca',${i},'code',this.value)" onblur="fetchNamePrice('dca',${i})"></td><td><input class="input input-sm" value="${row.name}" onchange="updateField('dca',${i},'name',this.value)"></td><td><input class="input input-sm" type="number" value="${row.monthly}" onchange="updateField('dca',${i},'monthly',this.value)"></td><td><input class="input input-sm" type="number" step="0.1" value="${row.mu}" onchange="updateField('dca',${i},'mu',this.value)"></td><td><input class="input input-sm" type="number" step="0.1" value="${row.sigma}" onchange="updateField('dca',${i},'sigma',this.value)"></td><td><input class="input input-sm" type="number" value="${row.yearsDone}" onchange="updateField('dca',${i},'yearsDone',this.value)"></td><td><input class="input input-sm" type="number" value="${row.yearsLeft}" onchange="updateField('dca',${i},'yearsLeft',this.value)"></td><td><input class="input input-sm" type="number" value="${row.acc}" onchange="updateField('dca',${i},'acc',this.value)"></td><td class="font-mono">${Math.round(fvDet).toLocaleString()}</td><td class="font-mono">${mc?Math.round(mc.median).toLocaleString():'-'}</td><td class="text-[11px]">${mc?`P10 ${Math.round(mc.p10).toLocaleString()} / P90 ${Math.round(mc.p90).toLocaleString()}`:'-'}</td><td><button onclick="delRow('dca',${i})" class="text-red-500">✕</button></td>`;
+    tbDca.appendChild(tr);
+  });
+}
+function updateField(type, idx, field, val){
+  const d=profiles[currentProfile]; const numFields=['shares','price','mu','sigma','monthly','yearsDone','yearsLeft','acc'];
+  if(numFields.includes(field)) d[type][idx][field]=parseFloat(val)||0; else d[type][idx][field]=val;
+  saveProfiles(); calcAll(); renderTables();
+}
+function deterministicFV(row){
+  const monthly=row.monthly||0; const mu=row.mu||0; const yearsLeft=row.yearsLeft||0; const acc=row.acc||0; const n=yearsLeft*12; if(n<=0) return acc;
+  const rMonth=Math.pow(1+mu/100,1/12)-1; let fv=acc;
+  if(rMonth===0) fv+=monthly*n; else fv=acc*Math.pow(1+rMonth,n)+monthly*((Math.pow(1+rMonth,n)-1)/rMonth);
+  return fv;
+}
+function randn(){ let u=0,v=0; while(u===0) u=Math.random(); while(v===0) v=Math.random(); return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); }
+function simulateGBM_DCA(row, sims=1000){
+  const monthly=row.monthly||0; const mu=row.mu/100||0.07; const sigma=row.sigma/100||0.15; const yearsLeft=row.yearsLeft||0; const n=Math.floor(yearsLeft*12); const dt=1/12; const acc=row.acc||0; const results=[];
+  for(let s=0;s<sims;s++){ let v=acc; for(let i=0;i<n;i++){ const z=randn(); const growth=Math.exp((mu-0.5*sigma*sigma)*dt+sigma*Math.sqrt(dt)*z); v=(v+monthly)*growth; } results.push(v); }
+  results.sort((a,b)=>a-b);
+  const mean=results.reduce((a,b)=>a+b,0)/results.length; const median=results[Math.floor(results.length*0.5)]; const p10=results[Math.floor(results.length*0.1)]; const p25=results[Math.floor(results.length*0.25)]; const p75=results[Math.floor(results.length*0.75)]; const p90=results[Math.floor(results.length*0.9)];
+  return {mean,median,p10,p25,p75,p90,all:results};
+}
+function runAllMonteCarlo(){
+  const d=profiles[currentProfile]; toast('跑蒙地卡羅 1000次/檔 ...');
+  setTimeout(()=>{ d.dca.forEach(row=>{ row.mc=simulateGBM_DCA(row,1000); row.mc.all=row.mc.all; }); renderTables(); renderMCResults(); calcAll(); toast('蒙地卡羅完成'); saveProfiles(); },100);
+}
+function renderMCResults(){
+  const d=profiles[currentProfile]; const div=document.getElementById('mcResults'); div.innerHTML=''; let totalMedian=0,totalP10=0,totalP90=0,totalDet=0;
+  d.dca.forEach(row=>{ if(!row.mc) return; totalMedian+=row.mc.median; totalP10+=row.mc.p10; totalP90+=row.mc.p90; totalDet+=deterministicFV(row); const el=document.createElement('div'); el.innerHTML=`<b>${row.code||'DCA'} ${row.name}</b> 每月${row.monthly} μ${row.mu}% σ${row.sigma}% ${row.yearsLeft}年 → 確定性 ${Math.round(deterministicFV(row)).toLocaleString()} / MC中位 ${Math.round(row.mc.median).toLocaleString()} (P10 ${Math.round(row.mc.p10).toLocaleString()} - P90 ${Math.round(row.mc.p90).toLocaleString()})`; div.appendChild(el); });
+  const sumEl=document.createElement('div'); sumEl.className='pt-2 border-t font-bold'; sumEl.textContent=`加總：確定性 ${Math.round(totalDet).toLocaleString()} / MC中位 ${Math.round(totalMedian).toLocaleString()} (P10 ${Math.round(totalP10).toLocaleString()} - P90 ${Math.round(totalP90).toLocaleString()})`; div.appendChild(sumEl); drawMCChart();
+}
+function drawMCChart(){
+  const d=profiles[currentProfile]; const canvas=document.getElementById('mcChart'); if(!canvas) return; const ctx=canvas.getContext('2d'); if(window.mcChartInst) window.mcChartInst.destroy();
+  const sims=1000; const totals=new Array(sims).fill(0); d.dca.forEach(row=>{ if(!row.mc) return; for(let i=0;i<sims;i++) totals[i]+=row.mc.all[i]; }); totals.sort((a,b)=>a-b);
+  if(totals.length===0) return; const min=Math.min(...totals), max=Math.max(...totals); const bins=20; const binWidth=(max-min)/bins||1; const counts=new Array(bins).fill(0); totals.forEach(v=>{ let idx=Math.floor((v-min)/binWidth); if(idx>=bins) idx=bins-1; if(idx<0) idx=0; counts[idx]++; });
+  const labels=counts.map((_,i)=>`${Math.round((min+i*binWidth)/1000)}k`); window.mcChartInst=new Chart(ctx,{type:'bar',data:{labels, datasets:[{label:'次數', data:counts, backgroundColor:'#0f172a'}]}, options:{responsive:true, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}}}});
+}
+function calcAll(){
+  const d=profiles[currentProfile]; const yearsToRetire=Math.max(0,(d.ageRetire-d.ageNow)); const yearsToRetire65=Math.max(0,(65-d.ageNow));
+  let twVal=0, twFV60=0, twFV65=0; d.tw.forEach(r=>{ const mv=r.shares*r.price; twVal+=mv; twFV60+=mv*Math.pow(1+r.mu/100, yearsToRetire); twFV65+=mv*Math.pow(1+r.mu/100, yearsToRetire65); });
+  let fundVal=0, fundFV60=0, fundFV65=0; d.fund.forEach(r=>{ const mv=r.shares*r.price; fundVal+=mv; fundFV60+=mv*Math.pow(1+r.mu/100, yearsToRetire); fundFV65+=mv*Math.pow(1+r.mu/100, yearsToRetire65); });
+  let usVal=0, usFV60=0, usFV65=0; d.us.forEach(r=>{ const mv=r.shares*r.price*32; usVal+=mv; usFV60+=mv*Math.pow(1+r.mu/100, yearsToRetire); usFV65+=mv*Math.pow(1+r.mu/100, yearsToRetire65); });
+  const laborVal=d.labor.balance; const laborMu=d.labor.mu/100; const laborFV60=laborVal*Math.pow(1+laborMu, yearsToRetire)+(d.labor.monthly*12)*((Math.pow(1+laborMu, yearsToRetire)-1)/laborMu||yearsToRetire); const laborFV65=laborVal*Math.pow(1+laborMu, yearsToRetire65)+(d.labor.monthly*12)*((Math.pow(1+laborMu, yearsToRetire65)-1)/laborMu||yearsToRetire65);
+  let dcaDetTotal=0,dcaMCMedian=0,dcaMCP10=0,dcaMCP90=0; d.dca.forEach(r=>{ dcaDetTotal+=deterministicFV(r); if(r.mc){ dcaMCMedian+=r.mc.median; dcaMCP10+=r.mc.p10; dcaMCP90+=r.mc.p90; } });
+  const totalCurrent=twVal+fundVal+usVal+laborVal;
+  const total60=twFV60+fundFV60+usFV60+laborFV60+dcaDetTotal;
+  const total60MC=twFV60+fundFV60+usFV60+laborFV60+dcaMCMedian;
+  const total65=twFV65+fundFV65+usFV65+laborFV65+d.dca.reduce((s,r)=>s+deterministicFV({...r,yearsLeft:r.yearsLeft+(65-d.ageRetire)}),0);
+  document.getElementById('totalCurrent').textContent=Math.round(totalCurrent).toLocaleString()+' TWD';
+  document.getElementById('totalCurrentBreakdown').textContent=`台股${Math.round(twVal).toLocaleString()} (${twVal?Math.round(twVal/totalCurrent*100):0}%) 基金${Math.round(fundVal).toLocaleString()} 美股${Math.round(usVal).toLocaleString()} 勞退${Math.round(laborVal).toLocaleString()}`;
+  document.getElementById('total60').textContent=Math.round(total60).toLocaleString();
+  document.getElementById('total60Detail').textContent=`台${Math.round(twFV60).toLocaleString()} 基${Math.round(fundFV60).toLocaleString()} 美${Math.round(usFV60).toLocaleString()} 勞${Math.round(laborFV60).toLocaleString()} DCA確定${Math.round(dcaDetTotal).toLocaleString()} | MC中位總 ${Math.round(total60MC).toLocaleString()}`;
+  document.getElementById('total65').textContent=Math.round(total65).toLocaleString();
+  document.getElementById('total65Detail').textContent=`含DCA到65歲`;
+  document.getElementById('totalDCA').textContent=dcaMCMedian?Math.round(dcaMCMedian).toLocaleString()+' (P10 '+Math.round(dcaMCP10).toLocaleString()+' - P90 '+Math.round(dcaMCP90).toLocaleString()+')' : Math.round(dcaDetTotal).toLocaleString()+' 確定性';
+  drawAllocChart(twVal,fundVal,usVal,laborVal,dcaDetTotal); drawGrowthChart(d);
+}
+function drawAllocChart(tw,fund,us,labor,dca){
+  const canvas=document.getElementById('allocChart'); if(!canvas) return; const ctx=canvas.getContext('2d'); if(window.allocChartInst) window.allocChartInst.destroy();
+  window.allocChartInst=new Chart(ctx,{type:'doughnut',data:{labels:['台股','基金','美股','勞退','DCA未來(確定)'], datasets:[{data:[tw,fund,us,labor,dca], backgroundColor:['#0f172a','#334155','#64748b','#94a3b8','#10b981']}]}, options:{responsive:true}});
+}
+function drawGrowthChart(d){
+  const canvas=document.getElementById('growthChart'); if(!canvas) return; const ctx=canvas.getContext('2d'); if(window.growthChartInst) window.growthChartInst.destroy();
+  const years=[]; const maxY=Math.max(0,65-d.ageNow); for(let i=0;i<=maxY;i++) years.push(d.ageNow+i);
+  const p10=[], p50=[], p90=[];
+  for(let i=0;i<=maxY;i++){
+    const y=i; let det=0;
+    d.tw.forEach(r=>det+=r.shares*r.price*Math.pow(1+r.mu/100, y));
+    d.fund.forEach(r=>det+=r.shares*r.price*Math.pow(1+r.mu/100, y));
+    d.us.forEach(r=>det+=r.shares*r.price*32*Math.pow(1+r.mu/100, y));
+    det+=d.labor.balance*Math.pow(1+d.labor.mu/100, y);
+    let dcaDet=0; d.dca.forEach(r=>{ const yl=Math.min(y, r.yearsLeft); const temp={...r, yearsLeft:yl}; dcaDet+=deterministicFV(temp); });
+    const totalDet=det+dcaDet; const sig=Math.sqrt(y)*0.15; p10.push(totalDet*Math.exp(-sig)); p50.push(totalDet); p90.push(totalDet*Math.exp(sig));
+  }
+  window.growthChartInst=new Chart(ctx,{type:'line',data:{labels:years, datasets:[{label:'P10悲觀', data:p10, borderColor:'#ef4444', tension:0.3, pointRadius:0},{label:'P50中位', data:p50, borderColor:'#0f172a', tension:0.3, pointRadius:0},{label:'P90樂觀', data:p90, borderColor:'#10b981', tension:0.3, pointRadius:0}]}, options:{responsive:true}});
+}
+
+function calcRetirement(){
+  const d=profiles[currentProfile]; 
+  const yearsToRetire=Math.max(0,(d.ageRetire-d.ageNow)); 
+  let html=`<div class="space-y-1"><div class="font-bold">距離退休 ${yearsToRetire} 年 - 每檔依μ%估算 (V7.2已修正: 52→60只算8年)</div>`;
+  let totalFV60=0;
+  d.tw.forEach(r=>{ 
+    const present=r.shares*r.price;
+    const fv=present*Math.pow(1+r.mu/100, yearsToRetire); 
+    totalFV60+=fv; 
+    html+=`<div>台股 ${r.code} ${r.name}: 現值 ${Math.round(present).toLocaleString()} → 60歲 ${Math.round(fv).toLocaleString()} (μ${r.mu}%) 依${yearsToRetire}年</div>`; 
+  });
+  d.fund.forEach(r=>{ 
+    const present=r.shares*r.price;
+    const fv=present*Math.pow(1+r.mu/100, yearsToRetire); 
+    totalFV60+=fv; 
+    html+=`<div>基金 ${r.code}: 現值 ${Math.round(present).toLocaleString()} → 60歲 ${Math.round(fv).toLocaleString()} (μ${r.mu}%) 依${yearsToRetire}年</div>`; 
+  });
+  d.us.forEach(r=>{ 
+    const present=r.shares*r.price*32;
+    const fv=present*Math.pow(1+r.mu/100, yearsToRetire); 
+    totalFV60+=fv; 
+    html+=`<div>美股 ${r.code}: 現值 ${Math.round(present).toLocaleString()} → 60歲 ${Math.round(fv).toLocaleString()} (μ${r.mu}%) 依${yearsToRetire}年</div>`; 
+  });
+  const laborPresent=d.labor.balance;
+  const laborFV=laborPresent*Math.pow(1+d.labor.mu/100, yearsToRetire)+(d.labor.monthly*12)*((Math.pow(1+d.labor.mu/100, yearsToRetire)-1)/(d.labor.mu/100)||yearsToRetire); 
+  totalFV60+=laborFV; 
+  html+=`<div>勞退: ${Math.round(laborPresent).toLocaleString()} → 60歲 ${Math.round(laborFV).toLocaleString()} (μ${d.labor.mu}%) 依${yearsToRetire}年</div>`;
+  let dcaFV=0; 
+  d.dca.forEach(r=>{ 
+    const effectiveYears = Math.min(r.yearsLeft||0, yearsToRetire);
+    const fv=deterministicFV({...r, yearsLeft: effectiveYears}); 
+    dcaFV+=fv; 
+    const mc=r.mc?` MC中位 ${Math.round(r.mc.median).toLocaleString()} P10-P90 ${Math.round(r.mc.p10).toLocaleString()}-${Math.round(r.mc.p90).toLocaleString()}`:'';
+    html+=`<div>DCA ${r.code} ${r.name}: 每月${r.monthly} 原設定${r.yearsLeft}年 → 實際算${effectiveYears}年 μ${r.mu}% σ${r.sigma}% → 確定性 ${Math.round(fv).toLocaleString()}${mc}</div>`; 
+  });
+  totalFV60+=dcaFV; 
+  html+=`<div class="font-bold pt-2 border-t">預估60歲總資產 確定性 ${Math.round(totalFV60).toLocaleString()} TWD (依距離退休${yearsToRetire}年計算)</div>`; 
+  const need=d.monthlySpend*12*d.yearsAfter; 
+  html+=`<div>退休後需求 每月${d.monthlySpend} * ${d.yearsAfter}年 = ${Math.round(need).toLocaleString()} (未計通膨) | 通膨${d.inflation}% 調整後約 ${Math.round(need*Math.pow(1+d.inflation/100, yearsToRetire)).toLocaleString()}</div></div>`; 
+  document.getElementById('calcDetail').innerHTML=html;
+}
+
+async function fetchNamePrice(type, idx){
+  const d=profiles[currentProfile]; const row=d[type][idx]; const code=row.code?.trim(); if(!code) return;
+  try{ const res=await fetch(`/.netlify/functions/stock?code=${encodeURIComponent(code)}`); if(res.ok){ const j=await res.json(); if(j.price){ row.price=j.price; row.name=j.name||NAME_MAP[code.toUpperCase()]||row.name; toast(`${code} 更新 ${j.price} ${j.name||''}`); renderTables(); calcAll(); saveProfiles(); return; } } }catch(e){}
+}
+async function updateAllPrices(){
+  const d=profiles[currentProfile]; let count=0; const all=[...d.tw,...d.fund,...d.us,...d.dca];
+  for(const row of all){ if(!row.code) continue; try{ const res=await fetch(`/.netlify/functions/stock?code=${encodeURIComponent(row.code)}`); if(res.ok){ const j=await res.json(); if(j.price){ row.price=j.price; if(j.name && j.name!==row.code) row.name=j.name; count++; } } }catch(e){} await new Promise(r=>setTimeout(r,200)); }
+  renderTables(); calcAll(); saveProfiles(); document.getElementById('lastUpdate').textContent=new Date().toLocaleString(); document.getElementById('priceStatus').textContent=`已更新 ${count} 檔`; toast(`已更新 ${count} 檔`);
+}
+
+async function autoFetchHistory(type, idx, range){
+  const d=profiles[currentProfile]; const row=d[type][idx]; const code=row.code?.trim(); if(!code){ toast('請先輸入代號'); return; }
+  toast(`${code} 抓 ${range} 歷史年化...`);
+  try{
+    const res=await fetch(`/.netlify/functions/stock?code=${encodeURIComponent(code)}&stats=${range}`);
+    if(res.ok){
+      const j=await res.json();
+      if(j.mu!=null && j.sigma!=null){
+        row.mu=parseFloat(j.mu.toFixed(2)); row.sigma=parseFloat(j.sigma.toFixed(2));
+        toast(`${code} ${range}: μ${j.mu.toFixed(2)}% σ${j.sigma.toFixed(2)}% CAGR${j.cagr?j.cagr.toFixed(2)+'%':''}`);
+        renderTables(); calcAll(); saveProfiles(); return;
+      }
+    }
+  }catch(e){}
+  toast(`${code} 抓歷史失敗`);
+}
+async function autoFetchAllHistory(range){
+  const d=profiles[currentProfile];
+  toast(`開始抓 ${range} ...`);
+  for(const type of ['tw','fund','us','dca']){
+    for(let i=0;i<d[type].length;i++){
+      if(!d[type][i].code) continue;
+      await autoFetchHistory(type,i,range);
+      await new Promise(r=>setTimeout(r,600));
+    }
+  }
+  toast(`${range} 抓完`);
+}
+
+function exportExcel(){
+  const d=profiles[currentProfile]; const wb=XLSX.utils.book_new();
+  const ws1=XLSX.utils.json_to_sheet(d.tw.map(r=>({代號:r.code, 名稱:r.name, 股數:r.shares, 現價:r.price, 市值:r.shares*r.price, 年化:r.mu, 波動:r.sigma, 未來60歲:r.shares*r.price*Math.pow(1+r.mu/100, Math.max(0,(d.ageRetire-d.ageNow)))})));
+  XLSX.utils.book_append_sheet(wb, ws1, '台股逐檔μ');
+  const ws2=XLSX.utils.json_to_sheet(d.fund); XLSX.utils.book_append_sheet(wb, ws2, '基金');
+  const ws3=XLSX.utils.json_to_sheet(d.us); XLSX.utils.book_append_sheet(wb, ws3, '美股');
+  const ws4=XLSX.utils.json_to_sheet(d.dca.map(r=>({代號:r.code, 名稱:r.name, 每月:r.monthly, 年化:r.mu, 波動:r.sigma, 還要投年:r.yearsLeft, 確定性FV:deterministicFV(r), MC中位:r.mc?.median, P10:r.mc?.p10, P90:r.mc?.p90}))); XLSX.utils.book_append_sheet(wb, ws4, 'DCA逐檔GBM');
+  XLSX.writeFile(wb, '退休資產_GBM逐檔_V7.xlsx');
+}
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.remove('hidden'); setTimeout(()=>t.classList.add('hidden'),2000); }
+document.getElementById('tabs').addEventListener('click', e=>{ if(!e.target.dataset.tab) return; document.querySelectorAll('.tab').forEach(el=>el.classList.remove('tab-active')); e.target.classList.add('tab-active'); document.querySelectorAll('.tab-panel').forEach(p=>p.classList.add('hidden')); document.getElementById('panel-'+e.target.dataset.tab).classList.remove('hidden'); });
+if(location.protocol==='file:') document.getElementById('fileWarning').classList.remove('hidden');
+loadProfiles();
+</script>
+</body>
+</html>
