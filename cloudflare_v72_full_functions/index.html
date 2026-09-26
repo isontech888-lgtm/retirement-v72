@@ -354,19 +354,26 @@ async function updateAllPrices(){
 
       const j=JSON.parse(txt);
 
-      if(j.price){
+     if(j.price){
 
-        row.price=j.price;
+    row.price = j.price;
 
-        if(j.name){
-          row.name=j.name;
-        }
+    if(j.name){
+        row.name = j.name;
+    }
 
-        count++;
+    row.source = j.source || "-";
 
-        console.log("成功更新",row.code,j.price);
+    count++;
 
-      }
+    console.log(
+      "成功更新",
+      row.code,
+      j.price,
+      j.source
+    );
+
+}
 
     }catch(e){
 
