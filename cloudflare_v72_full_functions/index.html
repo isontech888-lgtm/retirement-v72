@@ -321,9 +321,83 @@ async function fetchNamePrice(type, idx){
   try{ const res=await fetch(`/stock?code=${encodeURIComponent(code)}`); if(res.ok){ const j=await res.json(); if(j.price){ row.price=j.price; row.name=j.name||NAME_MAP[code.toUpperCase()]||row.name; toast(`${code} 更新 ${j.price} ${j.name||''}`); renderTables(); calcAll(); saveProfiles(); return; } } }catch(e){}
 }
 async function updateAllPrices(){
-  const d=profiles[currentProfile]; let count=0; const all=[...d.tw,...d.fund,...d.us,...d.dca];
-  for(const row of all){ if(!row.code) continue; try{ const res=await fetch(`/stock?code=${encodeURIComponent(row.code)}`); if(res.ok){ const j=await res.json(); if(j.price){ row.price=j.price; if(j.name && j.name!==row.code) row.name=j.name; count++; } } }catch(e){} await new Promise(r=>setTimeout(r,200)); }
-  renderTables(); calcAll(); saveProfiles(); document.getElementById('lastUpdate').textContent=new Date().toLocaleString(); document.getElementById('priceStatus').textContent=`已更新 ${count} 檔`; toast(`已更新 ${count} 檔`);
+
+  const d=profiles[currentProfile];
+  let count=0;
+
+  const all=[
+    ...d.tw,
+    ...d.fund,
+    ...d.us,
+    ...d.dca
+  ];
+
+  console.log("開始更新", all);
+
+  for(const row of all){
+
+    if(!row.code) continue;
+
+    try{
+
+      const url=`/stock?code=${encodeURIComponent(row.code)}`;
+
+      console.log("抓取",url);
+
+      const res=await fetch(url);
+
+      console.log("HTTP",res.status,row.code);
+
+      const txt=await res.text();
+
+      console.log("原始回應",row.code,txt);
+
+      const j=JSON.parse(txt);
+
+      if(j.price){
+
+        row.price=j.price;
+
+        if(j.name){
+          row.name=j.name;
+        }
+
+        count++;
+
+        console.log("成功更新",row.code,j.price);
+
+      }
+
+    }catch(e){
+
+      console.error(
+        "更新失敗",
+        row.code,
+        e
+      );
+
+    }
+
+    await new Promise(r=>setTimeout(r,200));
+
+  }
+
+  console.log(
+    "更新完成",
+    count
+  );
+
+  renderTables();
+  calcAll();
+  saveProfiles();
+
+  document.getElementById('lastUpdate').textContent=
+      new Date().toLocaleString();
+
+  document.getElementById('priceStatus').textContent=
+      `已更新 ${count} 檔`;
+
+  toast(`已更新 ${count} 檔`);
 }
 
 async function autoFetchHistory(type, idx, range){
